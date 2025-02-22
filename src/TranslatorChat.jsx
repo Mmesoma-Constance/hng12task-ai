@@ -1,9 +1,33 @@
 import { useState, useEffect } from "react";
+import "./TranslatorChat.css";
 
 function TranslatorChat() {
   const [messages, setMessages] = useState([]);
   const [inputText, setInputText] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
+  const [languageDetector, setLanguageDetector] = useState(null);
+
+  useEffect(() => {
+    const initLanguageDetector = async () => {
+      if ("ai" in self && "languageDetector" in self.ai) {
+        const capabilities = await self.ai.languageDetector.capabilities();
+        if (capabilities.capabilities === "readily") {
+          setLanguageDetector(await self.ai.languageDetector.create());
+        } else if (capabilities.capabilities === "after-download") {
+          const detector = await self.ai.languageDetector.create({
+            monitor(m) {
+              m.addEventListener("downloadprogress", (e) => {
+                console.log(`Downloading model: ${e.loaded} / ${e.total}`);
+              });
+            },
+          });
+          await detector.ready;
+          setLanguageDetector(detector);
+        }
+      }
+    };
+    initLanguageDetector();
+  }, []);
 
   useEffect(() => {
     const savedMessages = JSON.parse(localStorage.getItem("chatMessages")) || [];
@@ -14,7 +38,16 @@ function TranslatorChat() {
     localStorage.setItem("chatMessages", JSON.stringify(messages));
   }, [messages]);
 
-  const handleSendMessage = () => {
+  const languageNames = {
+    en: "English",
+    pt: "Portuguese",
+    es: "Spanish",
+    ru: "Russian",
+    tr: "Turkish",
+    fr: "French",
+  };
+
+  const handleSendMessage = async () => {
     if (!inputText.trim()) {
       setErrorMessage("Please enter a message.");
       return;
@@ -22,11 +55,17 @@ function TranslatorChat() {
     setErrorMessage("");
     const timestamp = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
+    let detectedLanguage = "en";
+    if (languageDetector) {
+      const detected = await languageDetector.detect(inputText);
+      detectedLanguage = detected?.language || "en";
+    }
+
     const newMessage = {
       text: inputText,
       time: timestamp,
       translated: null,
-      language: "fr",
+      language: detectedLanguage,
       loading: false,
     };
 
@@ -36,67 +75,86 @@ function TranslatorChat() {
 
   const handleTranslate = async (index, targetLanguage) => {
     setMessages((prev) =>
-      prev.map((msg, i) => (i === index ? { ...msg, loading: true, language: targetLanguage } : msg))
+      prev.map((msg, i) => (i === index ? { ...msg, loading: true, translated: null } : msg))
     );
 
     try {
       if ("ai" in self && "translator" in self.ai) {
         const translator = await self.ai.translator.create({
-          sourceLanguage: "en",
-          targetLanguage: targetLanguage,
+          sourceLanguage: messages[index].language,
+          targetLanguage,
         });
-
         const translatedText = await translator.translate(messages[index].text);
         setMessages((prev) =>
           prev.map((msg, i) =>
-            i === index ? { ...msg, translated: translatedText, loading: false } : msg
+            i === index
+              ? {
+                  ...msg,
+                  translated: translatedText,
+                  loading: false,
+                }
+              : msg
           )
         );
       } else {
         setMessages((prev) =>
           prev.map((msg, i) =>
-            i === index ? { ...msg, translated: "Translation not supported.", loading: false } : msg
+            i === index
+              ? {
+                  ...msg,
+                  translated: "Translation not supported.",
+                  loading: false,
+                }
+              : msg
           )
         );
       }
     } catch (error) {
       console.error("Translation failed:", error);
+      setMessages((prev) =>
+        prev.map((msg, i) =>
+          i === index
+            ? { ...msg, translated: "Translation failed. Please try again.", loading: false }
+            : msg
+        )
+      );
     }
+  };
+
+  const handleDelete = (index) => {
+    setMessages((prev) => prev.filter((_, i) => i !== index));
   };
 
   return (
     <div className="chat-container">
       <div className="messages">
         {messages.length === 0 ? (
-          <p className="empty-message">No messages yet. Start chatting!</p>
+          <p className="empty-message centered">No messages yet. Start chatting!</p>
         ) : (
           messages.map((msg, index) => (
             <div key={index} className="message">
               <p>
-                <strong>{msg.time}</strong>: {msg.text}
+                <strong>{msg.time}</strong>: {msg.text} ({languageNames[msg.language]})
               </p>
-
               <div className="translate-section">
-                <select
-                  value={msg.language}
-                  onChange={(e) => handleTranslate(index, e.target.value)}
-                >
-                  <option value="fr">French</option>
-                  <option value="es">Spanish</option>
-                  <option value="zh">Chinese</option>
+                <select onChange={(e) => handleTranslate(index, e.target.value)}>
+                  {Object.keys(languageNames).map((lang) => (
+                    <option key={lang} value={lang}>
+                      {languageNames[lang]}
+                    </option>
+                  ))}
                 </select>
-                <button onClick={() => handleTranslate(index, msg.language)}>Translate</button>
+                <button onClick={() => handleTranslate(index, "en")}>Translate</button>
               </div>
-
               {msg.loading && <p className="loading">Translating...</p>}
-              {msg.translated && (
-                <p className="translated">Translated to {msg.language}: {msg.translated}</p>
-              )}
+              {msg.translated && <p className="translated">{msg.translated}</p>}
+              <button className="delete-button" onClick={() => handleDelete(index)}>
+                Delete
+              </button>
             </div>
           ))
         )}
       </div>
-
       <div className="chat-input">
         <input
           type="text"
@@ -106,81 +164,7 @@ function TranslatorChat() {
         />
         <button onClick={handleSendMessage}>Send</button>
       </div>
-
       {errorMessage && <p className="error">{errorMessage}</p>}
-
-      <style>{`
-        * {
-          box-sizing: border-box;
-        }
-        body {
-          margin: 0;
-          font-family: Arial, sans-serif;
-        }
-        .chat-container {
-          display: flex;
-          flex-direction: column;
-          height: 100vh;
-          background: #1e1e1e;
-          color: white;
-          padding: 10px;
-        }
-        .messages {
-          flex: 1;
-          overflow-y: auto;
-          display: flex;
-          flex-direction: column-reverse;
-        }
-        .empty-message {
-          text-align: center;
-          font-style: italic;
-          opacity: 0.7;
-        }
-        .message {
-          background: #2a2a2a;
-          padding: 10px;
-          margin-bottom: 10px;
-          border-radius: 5px;
-        }
-        .translate-section {
-          display: flex;
-          gap: 10px;
-          margin-top: 5px;
-        }
-        .loading {
-          font-style: italic;
-          color: yellow;
-        }
-        .translated {
-          color: lightgreen;
-        }
-        .chat-input {
-          display: flex;
-          gap: 10px;
-          background: #333;
-          padding: 10px;
-          border-radius: 5px;
-        }
-        .chat-input input {
-          flex: 1;
-          padding: 10px;
-          border: none;
-          border-radius: 5px;
-        }
-        .chat-input button {
-          padding: 10px;
-          border: none;
-          border-radius: 5px;
-          background: #007bff;
-          color: white;
-          cursor: pointer;
-        }
-        .error {
-          color: red;
-          text-align: center;
-          margin-top: 5px;
-        }
-      `}</style>
     </div>
   );
 }
