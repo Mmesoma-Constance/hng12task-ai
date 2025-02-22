@@ -1,33 +1,39 @@
 import { useState, useEffect } from "react";
-import "./TranslatorChat.css";
+import "./TranslatorChat.css"; // Import the CSS file
+
+const useLanguageDetector = () => {
+  const [detector, setDetector] = useState(null);
+  const [status, setStatus] = useState("loading");
+
+  useEffect(() => {
+    const loadDetector = async () => {
+      if ("ai" in window && "languageDetector" in window.ai) {
+        const newDetector = await window.ai.languageDetector.create();
+        await newDetector.ready;
+        setDetector(newDetector);
+        setStatus("ready");
+      } else {
+        setStatus("not supported");
+      }
+    };
+
+    loadDetector();
+  }, []);
+
+  const detectLanguage = async (text) => {
+    if (!detector) return "unknown";
+    const results = await detector.detect(text);
+    return results[0]?.detectedLanguage || "unknown";
+  };
+
+  return { status, detectLanguage };
+};
 
 function TranslatorChat() {
   const [messages, setMessages] = useState([]);
   const [inputText, setInputText] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
-  const [languageDetector, setLanguageDetector] = useState(null);
-
-  useEffect(() => {
-    const initLanguageDetector = async () => {
-      if ("ai" in self && "languageDetector" in self.ai) {
-        const capabilities = await self.ai.languageDetector.capabilities();
-        if (capabilities.capabilities === "readily") {
-          setLanguageDetector(await self.ai.languageDetector.create());
-        } else if (capabilities.capabilities === "after-download") {
-          const detector = await self.ai.languageDetector.create({
-            monitor(m) {
-              m.addEventListener("downloadprogress", (e) => {
-                console.log(`Downloading model: ${e.loaded} / ${e.total}`);
-              });
-            },
-          });
-          await detector.ready;
-          setLanguageDetector(detector);
-        }
-      }
-    };
-    initLanguageDetector();
-  }, []);
+  const { status, detectLanguage } = useLanguageDetector();
 
   useEffect(() => {
     const savedMessages = JSON.parse(localStorage.getItem("chatMessages")) || [];
@@ -53,19 +59,15 @@ function TranslatorChat() {
       return;
     }
     setErrorMessage("");
+    const detectedLanguage = await detectLanguage(inputText);
     const timestamp = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-
-    let detectedLanguage = "en";
-    if (languageDetector) {
-      const detected = await languageDetector.detect(inputText);
-      detectedLanguage = detected?.language || "en";
-    }
 
     const newMessage = {
       text: inputText,
       time: timestamp,
       translated: null,
       language: detectedLanguage,
+      selectedLanguage: "fr",
       loading: false,
     };
 
@@ -73,24 +75,26 @@ function TranslatorChat() {
     setInputText("");
   };
 
-  const handleTranslate = async (index, targetLanguage) => {
+  const handleTranslate = async (index) => {
     setMessages((prev) =>
-      prev.map((msg, i) => (i === index ? { ...msg, loading: true, translated: null } : msg))
+      prev.map((msg, i) => (i === index ? { ...msg, loading: true } : msg))
     );
 
     try {
       if ("ai" in self && "translator" in self.ai) {
         const translator = await self.ai.translator.create({
-          sourceLanguage: messages[index].language,
-          targetLanguage,
+          sourceLanguage: "en",
+          targetLanguage: messages[index].selectedLanguage,
         });
+
         const translatedText = await translator.translate(messages[index].text);
+
         setMessages((prev) =>
           prev.map((msg, i) =>
             i === index
               ? {
                   ...msg,
-                  translated: translatedText,
+                  translated: `Translated to ${languageNames[messages[index].selectedLanguage]}: ${translatedText}`,
                   loading: false,
                 }
               : msg
@@ -121,6 +125,12 @@ function TranslatorChat() {
     }
   };
 
+  const handleLanguageChange = (index, selectedLanguage) => {
+    setMessages((prev) =>
+      prev.map((msg, i) => (i === index ? { ...msg, selectedLanguage } : msg))
+    );
+  };
+
   const handleDelete = (index) => {
     setMessages((prev) => prev.filter((_, i) => i !== index));
   };
@@ -134,27 +144,31 @@ function TranslatorChat() {
           messages.map((msg, index) => (
             <div key={index} className="message">
               <p>
-                <strong>{msg.time}</strong>: {msg.text} ({languageNames[msg.language]})
+                <strong>{msg.time}</strong>: {msg.text} ({languageNames[msg.language] || "Unknown"})
               </p>
+
               <div className="translate-section">
-                <select onChange={(e) => handleTranslate(index, e.target.value)}>
+                <select
+                  value={msg.selectedLanguage}
+                  onChange={(e) => handleLanguageChange(index, e.target.value)}
+                >
                   {Object.keys(languageNames).map((lang) => (
                     <option key={lang} value={lang}>
                       {languageNames[lang]}
                     </option>
                   ))}
                 </select>
-                <button onClick={() => handleTranslate(index, "en")}>Translate</button>
+                <button onClick={() => handleTranslate(index)}>Translate</button>
               </div>
+
               {msg.loading && <p className="loading">Translating...</p>}
               {msg.translated && <p className="translated">{msg.translated}</p>}
-              <button className="delete-button" onClick={() => handleDelete(index)}>
-                Delete
-              </button>
+              <button className="delete-button" onClick={() => handleDelete(index)}>Delete</button>
             </div>
           ))
         )}
       </div>
+
       <div className="chat-input">
         <input
           type="text"
@@ -164,6 +178,7 @@ function TranslatorChat() {
         />
         <button onClick={handleSendMessage}>Send</button>
       </div>
+
       {errorMessage && <p className="error">{errorMessage}</p>}
     </div>
   );
